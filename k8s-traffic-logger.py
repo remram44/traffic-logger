@@ -10,53 +10,26 @@ bpf_text = """
 #include <net/sock.h>
 #include <bcc/proto.h>
 
-struct ipv4_key_t {
-    u32 pid;
-    u32 saddr;
-    u32 daddr;
-    u16 lport;
-    u16 dport;
-};
-BPF_HASH(ipv4_send_bytes, struct ipv4_key_t);
-BPF_HASH(ipv4_recv_bytes, struct ipv4_key_t);
+BPF_HASH(ipv4_send_bytes, u32);
+BPF_HASH(ipv4_recv_bytes, u32);
 
-struct ipv6_key_t {
-    unsigned __int128 saddr;
-    unsigned __int128 daddr;
-    u32 pid;
-    u16 lport;
-    u16 dport;
-    u64 __pad__;
-};
-BPF_HASH(ipv6_send_bytes, struct ipv6_key_t);
-BPF_HASH(ipv6_recv_bytes, struct ipv6_key_t);
+BPF_HASH(ipv6_send_bytes, unsigned __int128);
+BPF_HASH(ipv6_recv_bytes, unsigned __int128);
 
 int kprobe__tcp_sendmsg(struct pt_regs *ctx, struct sock *sk,
     struct msghdr *msg, size_t size)
 {
-    u32 pid = bpf_get_current_pid_tgid() >> 32;
-
-    u16 dport = 0, family = sk->__sk_common.skc_family;
+    u16 family = sk->__sk_common.skc_family;
 
     if (family == AF_INET) {
-        struct ipv4_key_t ipv4_key = {.pid = pid};
-        ipv4_key.saddr = sk->__sk_common.skc_rcv_saddr;
-        ipv4_key.daddr = sk->__sk_common.skc_daddr;
-        ipv4_key.lport = sk->__sk_common.skc_num;
-        dport = sk->__sk_common.skc_dport;
-        ipv4_key.dport = ntohs(dport);
-        ipv4_send_bytes.increment(ipv4_key, size);
+        u32 saddr = sk->__sk_common.skc_rcv_saddr;
+        ipv4_send_bytes.increment(saddr, size);
 
     } else if (family == AF_INET6) {
-        struct ipv6_key_t ipv6_key = {.pid = pid};
-        bpf_probe_read_kernel(&ipv6_key.saddr, sizeof(ipv6_key.saddr),
+        unsigned __int128 saddr;
+        bpf_probe_read_kernel(&saddr, sizeof(saddr),
             &sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr32);
-        bpf_probe_read_kernel(&ipv6_key.daddr, sizeof(ipv6_key.daddr),
-            &sk->__sk_common.skc_v6_daddr.in6_u.u6_addr32);
-        ipv6_key.lport = sk->__sk_common.skc_num;
-        dport = sk->__sk_common.skc_dport;
-        ipv6_key.dport = ntohs(dport);
-        ipv6_send_bytes.increment(ipv6_key, size);
+        ipv6_send_bytes.increment(saddr, size);
     }
     // else drop
 
@@ -71,33 +44,20 @@ int kprobe__tcp_sendmsg(struct pt_regs *ctx, struct sock *sk,
  */
 int kprobe__tcp_cleanup_rbuf(struct pt_regs *ctx, struct sock *sk, int copied)
 {
-    u32 pid = bpf_get_current_pid_tgid() >> 32;
-
-    u16 dport = 0, family = sk->__sk_common.skc_family;
-    u64 *val, zero = 0;
+    u16 family = sk->__sk_common.skc_family;
 
     if (copied <= 0)
         return 0;
 
     if (family == AF_INET) {
-        struct ipv4_key_t ipv4_key = {.pid = pid};
-        ipv4_key.saddr = sk->__sk_common.skc_rcv_saddr;
-        ipv4_key.daddr = sk->__sk_common.skc_daddr;
-        ipv4_key.lport = sk->__sk_common.skc_num;
-        dport = sk->__sk_common.skc_dport;
-        ipv4_key.dport = ntohs(dport);
-        ipv4_recv_bytes.increment(ipv4_key, copied);
+        u32 saddr = sk->__sk_common.skc_rcv_saddr;
+        ipv4_recv_bytes.increment(saddr, copied);
 
     } else if (family == AF_INET6) {
-        struct ipv6_key_t ipv6_key = {.pid = pid};
-        bpf_probe_read_kernel(&ipv6_key.saddr, sizeof(ipv6_key.saddr),
+        unsigned __int128 saddr;
+        bpf_probe_read_kernel(&saddr, sizeof(saddr),
             &sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr32);
-        bpf_probe_read_kernel(&ipv6_key.daddr, sizeof(ipv6_key.daddr),
-            &sk->__sk_common.skc_v6_daddr.in6_u.u6_addr32);
-        ipv6_key.lport = sk->__sk_common.skc_num;
-        dport = sk->__sk_common.skc_dport;
-        ipv6_key.dport = ntohs(dport);
-        ipv6_recv_bytes.increment(ipv6_key, copied);
+        ipv6_recv_bytes.increment(saddr, copied);
     }
     // else drop
 
@@ -105,28 +65,11 @@ int kprobe__tcp_cleanup_rbuf(struct pt_regs *ctx, struct sock *sk, int copied)
 }
 """
 
-TCPSessionKey = namedtuple('TCPSession', ['pid', 'laddr', 'lport', 'daddr', 'dport'])
+def get_ipv4_key(k):
+    return inet_ntop(AF_INET, pack("I", k.value))
 
-def pid_to_comm(pid):
-    try:
-        comm = open("/proc/%d/comm" % pid, "r").read().rstrip()
-        return comm
-    except IOError:
-        return str(pid)
-
-def get_ipv4_session_key(k):
-    return TCPSessionKey(pid=k.pid,
-                         laddr=inet_ntop(AF_INET, pack("I", k.saddr)),
-                         lport=k.lport,
-                         daddr=inet_ntop(AF_INET, pack("I", k.daddr)),
-                         dport=k.dport)
-
-def get_ipv6_session_key(k):
-    return TCPSessionKey(pid=k.pid,
-                         laddr=inet_ntop(AF_INET6, k.saddr),
-                         lport=k.lport,
-                         daddr=inet_ntop(AF_INET6, k.daddr),
-                         dport=k.dport)
+def get_ipv6_key(k):
+    return inet_ntop(AF_INET6, k)
 
 # initialize BPF
 b = BPF(text=bpf_text)
@@ -149,52 +92,50 @@ while not exiting:
     # IPv4: build dict of all seen keys
     ipv4_throughput = defaultdict(lambda: [0, 0])
     for k, v in ipv4_send_bytes.items():
-        key = get_ipv4_session_key(k)
+        key = get_ipv4_key(k)
         ipv4_throughput[key][0] = v.value
     ipv4_send_bytes.clear()
 
     for k, v in ipv4_recv_bytes.items():
-        key = get_ipv4_session_key(k)
+        key = get_ipv4_key(k)
         ipv4_throughput[key][1] = v.value
     ipv4_recv_bytes.clear()
 
     if ipv4_throughput:
-        print("%-6s %-12s %-21s %-21s %6s %6s" % ("PID", "COMM",
-            "LADDR", "RADDR", "RX_KB", "TX_KB"))
+        print("%-21s %6s %6s" % ("LADDR", "RX_KB", "TX_KB"))
 
     # output
     for k, (send_bytes, recv_bytes) in sorted(ipv4_throughput.items(),
                                               key=lambda kv: sum(kv[1]),
                                               reverse=True):
-        print("%-6d %-12.12s %-21s %-21s %6d %6d" % (k.pid,
-            pid_to_comm(k.pid),
-            k.laddr + ":" + str(k.lport),
-            k.daddr + ":" + str(k.dport),
-            int(recv_bytes / 1024), int(send_bytes / 1024)))
+        print("%-21s %6d %6d" % (
+            k,
+            int(recv_bytes / 1024),
+            int(send_bytes / 1024),
+        ))
 
     # IPv6: build dict of all seen keys
     ipv6_throughput = defaultdict(lambda: [0, 0])
     for k, v in ipv6_send_bytes.items():
-        key = get_ipv6_session_key(k)
+        key = get_ipv6_key(k)
         ipv6_throughput[key][0] = v.value
     ipv6_send_bytes.clear()
 
     for k, v in ipv6_recv_bytes.items():
-        key = get_ipv6_session_key(k)
+        key = get_ipv6_key(k)
         ipv6_throughput[key][1] = v.value
     ipv6_recv_bytes.clear()
 
     if ipv6_throughput:
         # more than 80 chars, sadly.
-        print("\n%-6s %-12s %-32s %-32s %6s %6s" % ("PID", "COMM",
-            "LADDR6", "RADDR6", "RX_KB", "TX_KB"))
+        print("\n%-32s %6s %6s" % ("LADDR6", "RX_KB", "TX_KB"))
 
     # output
     for k, (send_bytes, recv_bytes) in sorted(ipv6_throughput.items(),
                                               key=lambda kv: sum(kv[1]),
                                               reverse=True):
-        print("%-6d %-12.12s %-32s %-32s %6d %6d" % (k.pid,
-            pid_to_comm(k.pid),
-            k.laddr + ":" + str(k.lport),
-            k.daddr + ":" + str(k.dport),
-            int(recv_bytes / 1024), int(send_bytes / 1024)))
+        print("%-32s %6d %6d" % (
+            k,
+            int(recv_bytes / 1024),
+            int(send_bytes / 1024),
+        ))
