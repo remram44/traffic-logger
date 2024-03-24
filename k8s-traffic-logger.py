@@ -1,79 +1,8 @@
-#! /usr/bin/python3
-# @lint-avoid-python-3-compatibility-imports
-#
-# tcptop    Summarize TCP send/recv throughput by host.
-#           For Linux, uses BCC, eBPF. Embedded C.
-#
-# USAGE: tcptop [-h] [-C] [-S] [-p PID] [interval [count]]
-#
-# This uses dynamic tracing of kernel functions, and will need to be updated
-# to match kernel changes.
-#
-# WARNING: This traces all send/receives at the TCP level, and while it
-# summarizes data in-kernel to reduce overhead, there may still be some
-# overhead at high TCP send/receive rates (eg, ~13% of one CPU at 100k TCP
-# events/sec. This is not the same as packet rate: funccount can be used to
-# count the kprobes below to find out the TCP rate). Test in a lab environment
-# first. If your send/receive rate is low (eg, <1k/sec) then the overhead is
-# expected to be negligible.
-#
-# ToDo: Fit output to screen size (top X only) in default (not -C) mode.
-#
-# Copyright 2016 Netflix, Inc.
-# Licensed under the Apache License, Version 2.0 (the "License")
-#
-# 02-Sep-2016   Brendan Gregg   Created this.
-
-from __future__ import print_function
 from bcc import BPF
-from bcc.containers import filter_by_containers
-import argparse
 from socket import inet_ntop, AF_INET, AF_INET6
 from struct import pack
-from time import sleep, strftime
-from subprocess import call
+from time import sleep
 from collections import namedtuple, defaultdict
-
-# arguments
-def range_check(string):
-    value = int(string)
-    if value < 1:
-        msg = "value must be stricly positive, got %d" % (value,)
-        raise argparse.ArgumentTypeError(msg)
-    return value
-
-examples = """examples:
-    ./tcptop           # trace TCP send/recv by host
-    ./tcptop -C        # don't clear the screen
-    ./tcptop -p 181    # only trace PID 181
-    ./tcptop --cgroupmap mappath  # only trace cgroups in this BPF map
-    ./tcptop --mntnsmap mappath   # only trace mount namespaces in the map
-"""
-parser = argparse.ArgumentParser(
-    description="Summarize TCP send/recv throughput by host",
-    formatter_class=argparse.RawDescriptionHelpFormatter,
-    epilog=examples)
-parser.add_argument("-C", "--noclear", action="store_true",
-    help="don't clear the screen")
-parser.add_argument("-S", "--nosummary", action="store_true",
-    help="skip system summary line")
-parser.add_argument("-p", "--pid",
-    help="trace this PID only")
-parser.add_argument("interval", nargs="?", default=1, type=range_check,
-    help="output interval, in seconds (default 1)")
-parser.add_argument("count", nargs="?", default=-1, type=range_check,
-    help="number of outputs")
-parser.add_argument("--cgroupmap",
-    help="trace cgroups in this BPF map only")
-parser.add_argument("--mntnsmap",
-    help="trace mount namespaces in this BPF map only")
-parser.add_argument("--ebpf", action="store_true",
-    help=argparse.SUPPRESS)
-args = parser.parse_args()
-debug = 0
-
-# linux stats
-loadavg = "/proc/loadavg"
 
 # define BPF program
 bpf_text = """
@@ -105,12 +34,7 @@ BPF_HASH(ipv6_recv_bytes, struct ipv6_key_t);
 int kprobe__tcp_sendmsg(struct pt_regs *ctx, struct sock *sk,
     struct msghdr *msg, size_t size)
 {
-    if (container_should_be_filtered()) {
-        return 0;
-    }
-
     u32 pid = bpf_get_current_pid_tgid() >> 32;
-    FILTER_PID
 
     u16 dport = 0, family = sk->__sk_common.skc_family;
 
@@ -147,12 +71,7 @@ int kprobe__tcp_sendmsg(struct pt_regs *ctx, struct sock *sk,
  */
 int kprobe__tcp_cleanup_rbuf(struct pt_regs *ctx, struct sock *sk, int copied)
 {
-    if (container_should_be_filtered()) {
-        return 0;
-    }
-
     u32 pid = bpf_get_current_pid_tgid() >> 32;
-    FILTER_PID
 
     u16 dport = 0, family = sk->__sk_common.skc_family;
     u64 *val, zero = 0;
@@ -186,18 +105,6 @@ int kprobe__tcp_cleanup_rbuf(struct pt_regs *ctx, struct sock *sk, int copied)
 }
 """
 
-# code substitutions
-if args.pid:
-    bpf_text = bpf_text.replace('FILTER_PID',
-        'if (pid != %s) { return 0; }' % args.pid)
-else:
-    bpf_text = bpf_text.replace('FILTER_PID', '')
-bpf_text = filter_by_containers(args) + bpf_text
-if debug or args.ebpf:
-    print(bpf_text)
-    if args.ebpf:
-        exit()
-
 TCPSessionKey = namedtuple('TCPSession', ['pid', 'laddr', 'lport', 'daddr', 'dport'])
 
 def pid_to_comm(pid):
@@ -229,25 +136,15 @@ ipv4_recv_bytes = b["ipv4_recv_bytes"]
 ipv6_send_bytes = b["ipv6_send_bytes"]
 ipv6_recv_bytes = b["ipv6_recv_bytes"]
 
-print('Tracing... Output every %s secs. Hit Ctrl-C to end' % args.interval)
-
 # output
-i = 0
 exiting = False
-while i != args.count and not exiting:
+while not exiting:
     try:
-        sleep(args.interval)
+        sleep(10)
     except KeyboardInterrupt:
         exiting = True
 
-    # header
-    if args.noclear:
-        print()
-    else:
-        call("clear")
-    if not args.nosummary:
-        with open(loadavg) as stats:
-            print("%-8s loadavg: %s" % (strftime("%H:%M:%S"), stats.read()))
+    print()
 
     # IPv4: build dict of all seen keys
     ipv4_throughput = defaultdict(lambda: [0, 0])
@@ -301,5 +198,3 @@ while i != args.count and not exiting:
             k.laddr + ":" + str(k.lport),
             k.daddr + ":" + str(k.dport),
             int(recv_bytes / 1024), int(send_bytes / 1024)))
-
-    i += 1
