@@ -16,6 +16,9 @@ BPF_HASH(ipv4_recv_bytes, u32);
 BPF_HASH(ipv6_send_bytes, unsigned __int128);
 BPF_HASH(ipv6_recv_bytes, unsigned __int128);
 
+BPF_HASH(ipv4_udp_recv_pending, u64, u32);
+BPF_HASH(ipv6_udp_recv_pending, u64, unsigned __int128);
+
 int kprobe__tcp_sendmsg(struct pt_regs *ctx, struct sock *sk,
     struct msghdr *msg, size_t size)
 {
@@ -63,6 +66,73 @@ int kprobe__tcp_cleanup_rbuf(struct pt_regs *ctx, struct sock *sk, int copied)
 
     return 0;
 }
+
+int udp_sendmsg(struct pt_regs *ctx, struct sock *sk,
+    struct msghdr *msg, size_t len)
+{
+    u16 family = sk->__sk_common.skc_family;
+
+    if (family == AF_INET) {
+        u32 saddr = sk->__sk_common.skc_rcv_saddr;
+        ipv4_send_bytes.increment(saddr, len);
+
+    } else if (family == AF_INET6) {
+        unsigned __int128 saddr;
+        bpf_probe_read_kernel(&saddr, sizeof(saddr),
+            &sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr32);
+        ipv6_send_bytes.increment(saddr, len);
+    }
+    // else drop
+
+    return 0;
+}
+
+int udp_recvmsg(struct pt_regs *ctx, struct sock *sk, struct msghdr *msg,
+    size_t len, int flags, int *addr_len)
+{
+    u16 family = sk->__sk_common.skc_family;
+
+    if (len <= 0)
+        return 0;
+
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+
+    if (family == AF_INET) {
+        u32 saddr = sk->__sk_common.skc_rcv_saddr;
+        ipv4_udp_recv_pending.update(&pid_tgid, &saddr);
+
+    } else if (family == AF_INET6) {
+        unsigned __int128 saddr;
+        bpf_probe_read_kernel(&saddr, sizeof(saddr),
+            &sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr32);
+        ipv6_udp_recv_pending.update(&pid_tgid, &saddr);
+    }
+    // else drop
+
+    return 0;
+}
+
+int ret_udp_recvmsg(struct pt_regs *ctx)
+{
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    int ret = (int)PT_REGS_RC(ctx);
+
+    if (ret > 0) {
+        u32 *saddr = ipv4_udp_recv_pending.lookup(&pid_tgid);
+        if (saddr) {
+            ipv4_recv_bytes.increment(*saddr, ret);
+        } else {
+            unsigned __int128 *saddr6 = ipv6_udp_recv_pending.lookup(&pid_tgid);
+            if (saddr6) {
+                ipv6_recv_bytes.increment(*saddr6, ret);
+            }
+        }
+    }
+    ipv4_udp_recv_pending.delete(&pid_tgid);
+    ipv6_udp_recv_pending.delete(&pid_tgid);
+
+    return 0;
+}
 """
 
 def get_ipv4_key(k):
@@ -78,6 +148,13 @@ ipv4_send_bytes = b["ipv4_send_bytes"]
 ipv4_recv_bytes = b["ipv4_recv_bytes"]
 ipv6_send_bytes = b["ipv6_send_bytes"]
 ipv6_recv_bytes = b["ipv6_recv_bytes"]
+
+b.attach_kprobe(event="udp_sendmsg", fn_name="udp_sendmsg")
+b.attach_kprobe(event="udpv6_sendmsg", fn_name="udp_sendmsg")
+b.attach_kprobe(event="udp_recvmsg", fn_name="udp_recvmsg")
+b.attach_kprobe(event="udpv6_recvmsg", fn_name="udp_recvmsg")
+b.attach_kretprobe(event="udp_recvmsg", fn_name="ret_udp_recvmsg")
+b.attach_kretprobe(event="udpv6_recvmsg", fn_name="ret_udp_recvmsg")
 
 # output
 exiting = False
