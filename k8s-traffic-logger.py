@@ -179,7 +179,7 @@ while not exiting:
     ipv4_recv_bytes.clear()
 
     if ipv4_throughput:
-        print("%-21s %6s %6s" % ("LADDR", "RX_KB", "TX_KB"))
+        print("%-21s %6s %6s" % ("LADDR", "RX_B", "TX_B"))
 
     # output
     for k, (send_bytes, recv_bytes) in sorted(ipv4_throughput.items(),
@@ -187,8 +187,8 @@ while not exiting:
                                               reverse=True):
         print("%-21s %6d %6d" % (
             k,
-            int(recv_bytes / 1024),
-            int(send_bytes / 1024),
+            int(recv_bytes),
+            int(send_bytes),
         ))
 
     # IPv6: build dict of all seen keys
@@ -205,7 +205,7 @@ while not exiting:
 
     if ipv6_throughput:
         # more than 80 chars, sadly.
-        print("\n%-32s %6s %6s" % ("LADDR6", "RX_KB", "TX_KB"))
+        print("\n%-32s %6s %6s" % ("LADDR6", "RX_B", "TX_B"))
 
     # output
     for k, (send_bytes, recv_bytes) in sorted(ipv6_throughput.items(),
@@ -213,6 +213,6 @@ while not exiting:
                                               reverse=True):
         print("%-32s %6d %6d" % (
             k,
-            int(recv_bytes / 1024),
-            int(send_bytes / 1024),
+            int(recv_bytes),
+            int(send_bytes),
         ))
