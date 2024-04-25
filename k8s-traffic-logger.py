@@ -1,8 +1,13 @@
 from bcc import BPF
 from socket import inet_ntop, AF_INET, AF_INET6
 from struct import pack
-from time import sleep
+from time import sleep, time
 from collections import namedtuple, defaultdict
+import os.path
+from kubernetes import client, config
+
+config.load_kube_config()
+v1 = client.CoreV1Api()
 
 # define BPF program
 bpf_text = """
@@ -135,15 +140,28 @@ int ret_udp_recvmsg(struct pt_regs *ctx)
 }
 """
 
+#pod name file
+HOSTNAME_PATH="/etc/hostname"
+#namespace file
+NAMESPACE_PATH="/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+
 def get_ipv4_key(k):
     return inet_ntop(AF_INET, pack("I", k.value))
 
 def get_ipv6_key(k):
     return inet_ntop(AF_INET6, k)
 
-# initialize BPF
-b = BPF(text=bpf_text)
+def get_hostname():
+    hostname = ""
+    if os.path.isfile(HOSTNAME_PATH):
+        f = open(HOSTNAME_PATH)
+        hostname = f.read().strip()
+        f.close()
+    return hostname
 
+    
+# initialize BPF
+b = BPF(text=bpf_text, cflags=['-Wno-macro-redefined']) #use this cflag to suppress macro redefine warning
 ipv4_send_bytes = b["ipv4_send_bytes"]
 ipv4_recv_bytes = b["ipv4_recv_bytes"]
 ipv6_send_bytes = b["ipv6_send_bytes"]
@@ -156,6 +174,13 @@ b.attach_kprobe(event="udpv6_recvmsg", fn_name="udp_recvmsg")
 b.attach_kretprobe(event="udp_recvmsg", fn_name="ret_udp_recvmsg")
 b.attach_kretprobe(event="udpv6_recvmsg", fn_name="ret_udp_recvmsg")
 
+
+# influx DB line protocal tag/field names
+MEASUREMENT = "traffic"
+RX = "recv(-)"
+TX = "transmit(+)"
+hostname = get_hostname()
+
 # output
 exiting = False
 while not exiting:
@@ -166,6 +191,13 @@ while not exiting:
 
     print()
 
+    # Get pod metadata
+    all_pod_metadata = defaultdict(lambda: ["",""])
+    ret = v1.list_pod_for_all_namespaces(watch=False)
+    for pod in ret.items:
+        if pod.status.pod_ip:
+            all_pod_metadata[pod.status.pod_ip] = [pod.metadata.namespace, pod.metadata.name]
+    
     # IPv4: build dict of all seen keys
     ipv4_throughput = defaultdict(lambda: [0, 0])
     for k, v in ipv4_send_bytes.items():
@@ -179,18 +211,39 @@ while not exiting:
     ipv4_recv_bytes.clear()
 
     if ipv4_throughput:
-        print("%-21s %6s %6s" % ("LADDR", "RX_B", "TX_B"))
+        pass
+        # print("%-21s %6s %6s" % ("LADDR", "RX_B", "TX_B"))
 
     # output
     for k, (send_bytes, recv_bytes) in sorted(ipv4_throughput.items(),
                                               key=lambda kv: sum(kv[1]),
                                               reverse=True):
+        '''
         print("%-21s %6d %6d" % (
             k,
             int(recv_bytes),
             int(send_bytes),
         ))
-
+        '''
+        
+        print("{measurement},{tag1}={val1},{tag2}={val2},{tag3}={val3},{tag4}={val4},{tag5}={val5} {field1}={field_val1},{field2}={field_val2} {timestamp}"
+                .format(measurement=MEASUREMENT,
+                        tag1="HOSTNAME",
+                        val1=hostname,
+                        tag2="IPv",
+                        val2="4",
+                        tag3="LADDR",
+                        val3=k,
+                        tag4="NAMESPACE",
+                        val4=all_pod_metadata.get(k,["",""])[0],
+                        tag5="POD",
+                        val5=all_pod_metadata.get(k,["",""])[1],
+                        field1=TX,
+                        field_val1=int(send_bytes),
+                        field2=RX,
+                        field_val2=int(recv_bytes),
+                        timestamp=int(float(time())*10**9)))
+    
     # IPv6: build dict of all seen keys
     ipv6_throughput = defaultdict(lambda: [0, 0])
     for k, v in ipv6_send_bytes.items():
@@ -204,15 +257,38 @@ while not exiting:
     ipv6_recv_bytes.clear()
 
     if ipv6_throughput:
+        pass
         # more than 80 chars, sadly.
-        print("\n%-32s %6s %6s" % ("LADDR6", "RX_B", "TX_B"))
+        # print("\n%-32s %6s %6s" % ("LADDR6", "RX_B", "TX_B"))
 
     # output
     for k, (send_bytes, recv_bytes) in sorted(ipv6_throughput.items(),
                                               key=lambda kv: sum(kv[1]),
+        
                                               reverse=True):
+        '''
         print("%-32s %6d %6d" % (
             k,
             int(recv_bytes),
             int(send_bytes),
         ))
+        '''
+
+        print("{measurement},{tag1}={val1},{tag2}={val2},{tag3}={val3},{tag4}={val4},{tag5}={val5} {field1}={field_val1},{field2}={field_val2} {timestamp}"
+                .format(measurement=MEASUREMENT,
+                        tag1="HOSTNAME",
+                        val1=hostname,
+                        tag2="IPv",
+                        val2="6",
+                        tag3="LADDR",
+                        val3=k,
+                        tag4="NAMESPACE",
+                        val4=all_pod_metadata.get(k,["",""])[0],
+                        tag5="POD",
+                        val5=all_pod_metadata.get(k,["",""])[1],
+                        field1=TX,
+                        field_val1=int(send_bytes),
+                        field2=RX,
+                        field_val2=int(recv_bytes),
+                        timestamp=int(float(time())*10**9)))
+
