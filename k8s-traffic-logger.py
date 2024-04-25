@@ -140,10 +140,8 @@ int ret_udp_recvmsg(struct pt_regs *ctx)
 }
 """
 
-#pod name file
+# hostname file
 HOSTNAME_PATH="/etc/hostname"
-#namespace file
-NAMESPACE_PATH="/var/run/secrets/kubernetes.io/serviceaccount/namespace"
 
 def get_ipv4_key(k):
     return inet_ntop(AF_INET, pack("I", k.value))
