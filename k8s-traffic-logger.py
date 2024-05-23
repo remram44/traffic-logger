@@ -2,7 +2,7 @@ from bcc import BPF
 from socket import inet_ntop, AF_INET, AF_INET6
 from struct import pack
 from time import sleep, time
-from collections import namedtuple, defaultdict
+from collections import defaultdict
 import os.path
 from kubernetes import client, config
 import requests
@@ -165,9 +165,8 @@ def get_hostname():
         f.close()
     return hostname
 
-    
 # initialize BPF
-b = BPF(text=bpf_text, cflags=['-Wno-macro-redefined']) #use this cflag to suppress macro redefine warning
+b = BPF(text=bpf_text)
 ipv4_send_bytes = b["ipv4_send_bytes"]
 ipv4_recv_bytes = b["ipv4_recv_bytes"]
 ipv6_send_bytes = b["ipv6_send_bytes"]
@@ -179,7 +178,6 @@ b.attach_kprobe(event="udp_recvmsg", fn_name="udp_recvmsg")
 b.attach_kprobe(event="udpv6_recvmsg", fn_name="udp_recvmsg")
 b.attach_kretprobe(event="udp_recvmsg", fn_name="ret_udp_recvmsg")
 b.attach_kretprobe(event="udpv6_recvmsg", fn_name="ret_udp_recvmsg")
-
 
 # influx DB line protocal tag/field names
 MEASUREMENT = "traffic"
@@ -203,7 +201,7 @@ while not exiting:
     for pod in ret.items:
         if pod.status.pod_ip:
             all_pod_metadata[pod.status.pod_ip] = [pod.metadata.namespace, pod.metadata.name]
-    
+
     # IPv4: build dict of all seen keys
     ipv4_throughput = defaultdict(lambda: [0, 0])
     for k, v in ipv4_send_bytes.items():
@@ -221,7 +219,7 @@ while not exiting:
     for k, (send_bytes, recv_bytes) in sorted(ipv4_throughput.items(),
                                               key=lambda kv: sum(kv[1]),
                                               reverse=True):
-        
+
         ipv4_datapoints += "{measurement},{tag1}={val1},{tag2}={val2},{tag3}={val3},{tag4}={val4},{tag5}={val5} {field1}={field_val1},{field2}={field_val2} {timestamp}".format(
             measurement=MEASUREMENT,
             tag1="HOSTNAME",
@@ -240,7 +238,7 @@ while not exiting:
             field_val2=int(recv_bytes),
             timestamp=int(float(time())*10**9))
         ipv4_datapoints += "\n"
-    
+
     response = requests.post(ENDPOINT, headers=HEADERS, data=ipv4_datapoints)
     print(response.status_code)
     print(response.text)
@@ -266,7 +264,6 @@ while not exiting:
     ipv6_datapoints = ""
     for k, (send_bytes, recv_bytes) in sorted(ipv6_throughput.items(),
                                               key=lambda kv: sum(kv[1]),
-        
                                               reverse=True):
 
         ipv6_datapoints += "{measurement},{tag1}={val1},{tag2}={val2},{tag3}={val3},{tag4}={val4},{tag5}={val5} {field1}={field_val1},{field2}={field_val2} {timestamp}".format(
