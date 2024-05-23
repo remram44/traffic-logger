@@ -179,8 +179,8 @@ b.attach_kretprobe(event="udpv6_recvmsg", fn_name="ret_udp_recvmsg")
 
 # influx DB line protocal tag/field names
 MEASUREMENT = "traffic"
-RX = "recv(-)"
-TX = "transmit(+)"
+RX = "received_bytes"
+TX = "sent_bytes"
 
 # output
 exiting = False
