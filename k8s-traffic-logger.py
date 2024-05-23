@@ -212,12 +212,12 @@ while not exiting:
     ipv4_recv_bytes.clear()
 
     # output
-    ipv4_datapoints = ""
+    ipv4_datapoints = []
     for local_address, (send_bytes, recv_bytes) in sorted(ipv4_throughput.items(),
                                               key=lambda kv: sum(kv[1]),
                                               reverse=True):
 
-        ipv4_datapoints += "{measurement},hostname={hostname},ip_version={ip_version},local_address={local_address},namespace={namespace},pod={pod} sent_bytes={send_bytes},received_bytes={recv_bytes} {timestamp}".format(
+        ipv4_datapoints.append("{measurement},hostname={hostname},ip_version={ip_version},local_address={local_address},namespace={namespace},pod={pod} sent_bytes={send_bytes},received_bytes={recv_bytes} {timestamp}".format(
             measurement=MEASUREMENT,
             hostname=hostname,
             ip_version="4",
@@ -227,10 +227,9 @@ while not exiting:
             send_bytes=int(send_bytes),
             recv_bytes=int(recv_bytes),
             timestamp=int(float(time()) * 10**9),
-        )
-        ipv4_datapoints += "\n"
+        ))
 
-    response = requests.post(ENDPOINT, headers=HEADERS, data=ipv4_datapoints)
+    response = requests.post(ENDPOINT, headers=HEADERS, data='\n'.join(ipv4_datapoints))
     print(response.status_code)
     print(response.text)
 
@@ -252,12 +251,12 @@ while not exiting:
         # print("\n%-32s %6s %6s" % ("LADDR6", "RX_B", "TX_B"))
 
     # output
-    ipv6_datapoints = ""
+    ipv6_datapoints = []
     for local_address, (send_bytes, recv_bytes) in sorted(ipv6_throughput.items(),
                                               key=lambda kv: sum(kv[1]),
                                               reverse=True):
 
-        ipv6_datapoints += "{measurement},hostname={hostname},ip_version={ip_version},local_address={local_address},namespace={namespace},pod={pod} sent_bytes={send_bytes},received_bytes={received_bytes} {timestamp}".format(
+        ipv6_datapoints.append("{measurement},hostname={hostname},ip_version={ip_version},local_address={local_address},namespace={namespace},pod={pod} sent_bytes={send_bytes},received_bytes={received_bytes} {timestamp}".format(
             measurement=MEASUREMENT,
             hostname=hostname,
             ip_version="6",
@@ -267,9 +266,8 @@ while not exiting:
             send_bytes=int(send_bytes),
             received_bytes=int(recv_bytes),
             timestamp=int(float(time())*10**9),
-        )
-        ipv6_datapoints += "\n"
+        ))
 
-    response = requests.post(ENDPOINT, headers=HEADERS, data=ipv6_datapoints)
+    response = requests.post(ENDPOINT, headers=HEADERS, data='\n'.join(ipv6_datapoints))
     print(response.status_code)
     print(response.text)
