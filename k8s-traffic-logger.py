@@ -5,7 +5,10 @@ from time import sleep, time
 from collections import defaultdict
 import os.path
 from kubernetes import client, config
+import logging
 import requests
+
+logger = logging.getLogger('k8s-traffic-logger')
 
 config.load_kube_config()
 v1 = client.CoreV1Api()
@@ -146,9 +149,9 @@ HOSTNAME_PATH="/etc/hostname"
 BEARER_TOKEN = os.environ.get("BEARER_TOKEN")
 ENDPOINT = os.environ.get("ENDPOINT")
 HEADERS = {
-    'Authorization': 'Token {}'.format(BEARER_TOKEN),
+    'Authorization': f'Token {BEARER_TOKEN}',
     'Content-Type': 'text/plain; charset=utf-8',
-    'Accept': 'application/json'
+    'Accept': 'application/json',
 }
 
 def get_ipv4_key(k):
@@ -219,7 +222,7 @@ while not exiting:
 
     # Get pod metadata
     all_pod_metadata = {}
-    ret = v1.list_pod_for_all_namespaces(watch=False, field_selector='spec.nodeName={}'.format(hostname))
+    ret = v1.list_pod_for_all_namespaces(watch=False, field_selector=f'spec.nodeName={hostname}')
     for pod in ret.items:
         if pod.status.pod_ip:
             all_pod_metadata[pod.status.pod_ip] = [pod.metadata.namespace, pod.metadata.name]
@@ -257,8 +260,8 @@ while not exiting:
         )
 
     response = requests.post(ENDPOINT, headers=HEADERS, data=ipv4_datapoints.as_string())
-    print(response.status_code)
-    print(response.text)
+    if response.status_code >= 400:
+        logger.warning("HTTP error %d", response.status_code)
 
     # IPv6: build dict of all seen keys
     ipv6_throughput = defaultdict(lambda: [0, 0])
@@ -271,11 +274,6 @@ while not exiting:
         key = get_ipv6_key(k)
         ipv6_throughput[key][1] = v.value
     ipv6_recv_bytes.clear()
-
-    if ipv6_throughput:
-        pass
-        # more than 80 chars, sadly.
-        # print("\n%-32s %6s %6s" % ("LADDR6", "RX_B", "TX_B"))
 
     # output
     ipv6_datapoints = InfluxLineProtocolWriter()
@@ -298,5 +296,5 @@ while not exiting:
         )
 
     response = requests.post(ENDPOINT, headers=HEADERS, data=ipv6_datapoints.as_string())
-    print(response.status_code)
-    print(response.text)
+    if response.status_code >= 400:
+        logger.warning("HTTP error %d", response.status_code)
