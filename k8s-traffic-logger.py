@@ -213,27 +213,21 @@ while not exiting:
 
     # output
     ipv4_datapoints = ""
-    for k, (send_bytes, recv_bytes) in sorted(ipv4_throughput.items(),
+    for local_address, (send_bytes, recv_bytes) in sorted(ipv4_throughput.items(),
                                               key=lambda kv: sum(kv[1]),
                                               reverse=True):
 
-        ipv4_datapoints += "{measurement},{tag1}={val1},{tag2}={val2},{tag3}={val3},{tag4}={val4},{tag5}={val5} {field1}={field_val1},{field2}={field_val2} {timestamp}".format(
+        ipv4_datapoints += "{measurement},hostname={hostname},ip_version={ip_version},local_address={local_address},namespace={namespace},pod={pod} sent_bytes={send_bytes},received_bytes={recv_bytes} {timestamp}".format(
             measurement=MEASUREMENT,
-            tag1="HOSTNAME",
-            val1=hostname,
-            tag2="IPv",
-            val2="4",
-            tag3="LADDR",
-            val3=k,
-            tag4="NAMESPACE",
-            val4=all_pod_metadata.get(k,["NA","NA"])[0],
-            tag5="POD",
-            val5=all_pod_metadata.get(k,["NA","NA"])[1],
-            field1=TX,
-            field_val1=int(send_bytes),
-            field2=RX,
-            field_val2=int(recv_bytes),
-            timestamp=int(float(time())*10**9))
+            hostname=hostname,
+            ip_version="4",
+            local_address=local_address,
+            namespace=all_pod_metadata.get(local_address, ["NA", "NA"])[0],
+            pod=all_pod_metadata.get(local_address, ["NA", "NA"])[1],
+            send_bytes=int(send_bytes),
+            recv_bytes=int(recv_bytes),
+            timestamp=int(float(time()) * 10**9),
+        )
         ipv4_datapoints += "\n"
 
     response = requests.post(ENDPOINT, headers=HEADERS, data=ipv4_datapoints)
@@ -259,27 +253,21 @@ while not exiting:
 
     # output
     ipv6_datapoints = ""
-    for k, (send_bytes, recv_bytes) in sorted(ipv6_throughput.items(),
+    for local_address, (send_bytes, recv_bytes) in sorted(ipv6_throughput.items(),
                                               key=lambda kv: sum(kv[1]),
                                               reverse=True):
 
-        ipv6_datapoints += "{measurement},{tag1}={val1},{tag2}={val2},{tag3}={val3},{tag4}={val4},{tag5}={val5} {field1}={field_val1},{field2}={field_val2} {timestamp}".format(
+        ipv6_datapoints += "{measurement},hostname={hostname},ip_version={ip_version},local_address={local_address},namespace={namespace},pod={pod} sent_bytes={send_bytes},received_bytes={received_bytes} {timestamp}".format(
             measurement=MEASUREMENT,
-            tag1="HOSTNAME",
-            val1=hostname,
-            tag2="IPv",
-            val2="6",
-            tag3="LADDR",
-            val3=k,
-            tag4="NAMESPACE",
-            val4=all_pod_metadata.get(k,["NA","NA"])[0],
-            tag5="POD",
-            val5=all_pod_metadata.get(k,["NA","NA"])[1],
-            field1=TX,
-            field_val1=int(send_bytes),
-            field2=RX,
-            field_val2=int(recv_bytes),
-            timestamp=int(float(time())*10**9))
+            hostname=hostname,
+            ip_version="6",
+            local_address=local_address,
+            namespace=all_pod_metadata.get(local_address, ["NA","NA"])[0],
+            pod=all_pod_metadata.get(local_address, ["NA","NA"])[1],
+            send_bytes=int(send_bytes),
+            received_bytes=int(recv_bytes),
+            timestamp=int(float(time())*10**9),
+        )
         ipv6_datapoints += "\n"
 
     response = requests.post(ENDPOINT, headers=HEADERS, data=ipv6_datapoints)
