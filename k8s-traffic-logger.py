@@ -157,13 +157,11 @@ def get_ipv4_key(k):
 def get_ipv6_key(k):
     return inet_ntop(AF_INET6, k)
 
-def get_hostname():
-    hostname = ""
-    if os.path.isfile(HOSTNAME_PATH):
-        f = open(HOSTNAME_PATH)
-        hostname = f.read().strip()
-        f.close()
-    return hostname
+hostname = ""
+if os.path.isfile(HOSTNAME_PATH):
+    f = open(HOSTNAME_PATH)
+    hostname = f.read().strip()
+    f.close()
 
 # initialize BPF
 b = BPF(text=bpf_text)
@@ -183,7 +181,6 @@ b.attach_kretprobe(event="udpv6_recvmsg", fn_name="ret_udp_recvmsg")
 MEASUREMENT = "traffic"
 RX = "recv(-)"
 TX = "transmit(+)"
-hostname = get_hostname()
 
 # output
 exiting = False
