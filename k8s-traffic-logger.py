@@ -182,6 +182,31 @@ MEASUREMENT = "traffic"
 RX = "received_bytes"
 TX = "sent_bytes"
 
+class InfluxLineProtocolWriter(object):
+    def __init__(self, *, timestamp=None):
+        if timestamp is None:
+            self._timestamp = int(float(time()) * 10**9)
+        else:
+            self._timestamp = timestamp
+        self._lines = []
+
+    def add_measurement(self, measurement, tags, fields):
+        timestamp = self._timestamp
+
+        if tags:
+            tags_str = ',' + ','.join(f'{k}={v}' for k, v in tags.items())
+        else:
+            tags_str = ''
+
+        fields_str = ','.join(f'{k}={v}' for k, v in tags.items())
+
+        self._lines.append(
+            f'{measurement}{tags_str} {fields_str} {timestamp}',
+        )
+
+    def as_string(self):
+        return '\n'.join(self._lines)
+
 # output
 exiting = False
 while not exiting:
@@ -212,24 +237,26 @@ while not exiting:
     ipv4_recv_bytes.clear()
 
     # output
-    ipv4_datapoints = []
+    ipv4_datapoints = InfluxLineProtocolWriter()
     for local_address, (send_bytes, recv_bytes) in sorted(ipv4_throughput.items(),
                                               key=lambda kv: sum(kv[1]),
                                               reverse=True):
+        ipv4_datapoints.add_measurement(
+            MEASUREMENT,
+            dict(
+                hostname=hostname,
+                ip_version="4",
+                local_address=local_address,
+                namespace=all_pod_metadata.get(local_address, ["NA", "NA"])[0],
+                pod=all_pod_metadata.get(local_address, ["NA", "NA"])[1],
+            ),
+            dict(
+                sent_bytes=int(send_bytes),
+                received_bytes=int(recv_bytes),
+            ),
+        )
 
-        ipv4_datapoints.append("{measurement},hostname={hostname},ip_version={ip_version},local_address={local_address},namespace={namespace},pod={pod} sent_bytes={send_bytes},received_bytes={recv_bytes} {timestamp}".format(
-            measurement=MEASUREMENT,
-            hostname=hostname,
-            ip_version="4",
-            local_address=local_address,
-            namespace=all_pod_metadata.get(local_address, ["NA", "NA"])[0],
-            pod=all_pod_metadata.get(local_address, ["NA", "NA"])[1],
-            send_bytes=int(send_bytes),
-            recv_bytes=int(recv_bytes),
-            timestamp=int(float(time()) * 10**9),
-        ))
-
-    response = requests.post(ENDPOINT, headers=HEADERS, data='\n'.join(ipv4_datapoints))
+    response = requests.post(ENDPOINT, headers=HEADERS, data=ipv4_datapoints.as_string())
     print(response.status_code)
     print(response.text)
 
@@ -251,23 +278,25 @@ while not exiting:
         # print("\n%-32s %6s %6s" % ("LADDR6", "RX_B", "TX_B"))
 
     # output
-    ipv6_datapoints = []
+    ipv6_datapoints = InfluxLineProtocolWriter()
     for local_address, (send_bytes, recv_bytes) in sorted(ipv6_throughput.items(),
                                               key=lambda kv: sum(kv[1]),
                                               reverse=True):
+        ipv6_datapoints.add_measurement(
+            MEASUREMENT,
+            dict(
+                hostname=hostname,
+                ip_version="6",
+                local_address=local_address,
+                namespace=all_pod_metadata.get(local_address, ["NA", "NA"])[0],
+                pod=all_pod_metadata.get(local_address, ["NA", "NA"])[1],
+            ),
+            dict(
+                send_bytes=int(send_bytes),
+                received_bytes=int(recv_bytes),
+            )
+        )
 
-        ipv6_datapoints.append("{measurement},hostname={hostname},ip_version={ip_version},local_address={local_address},namespace={namespace},pod={pod} sent_bytes={send_bytes},received_bytes={received_bytes} {timestamp}".format(
-            measurement=MEASUREMENT,
-            hostname=hostname,
-            ip_version="6",
-            local_address=local_address,
-            namespace=all_pod_metadata.get(local_address, ["NA","NA"])[0],
-            pod=all_pod_metadata.get(local_address, ["NA","NA"])[1],
-            send_bytes=int(send_bytes),
-            received_bytes=int(recv_bytes),
-            timestamp=int(float(time())*10**9),
-        ))
-
-    response = requests.post(ENDPOINT, headers=HEADERS, data='\n'.join(ipv6_datapoints))
+    response = requests.post(ENDPOINT, headers=HEADERS, data=ipv6_datapoints.as_string())
     print(response.status_code)
     print(response.text)
