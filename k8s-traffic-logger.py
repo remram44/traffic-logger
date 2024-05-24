@@ -1,8 +1,17 @@
 from bcc import BPF
 from socket import inet_ntop, AF_INET, AF_INET6
 from struct import pack
-from time import sleep
-from collections import namedtuple, defaultdict
+from time import sleep, time
+from collections import defaultdict
+import os.path
+from kubernetes import client, config
+import logging
+import requests
+
+logger = logging.getLogger('k8s-traffic-logger')
+
+config.load_kube_config()
+v1 = client.CoreV1Api()
 
 # define BPF program
 bpf_text = """
@@ -135,15 +144,30 @@ int ret_udp_recvmsg(struct pt_regs *ctx)
 }
 """
 
+# hostname file
+HOSTNAME_PATH="/etc/hostname"
+BEARER_TOKEN = os.environ.get("BEARER_TOKEN")
+ENDPOINT = os.environ.get("ENDPOINT")
+HEADERS = {
+    'Authorization': f'Token {BEARER_TOKEN}',
+    'Content-Type': 'text/plain; charset=utf-8',
+    'Accept': 'application/json',
+}
+
 def get_ipv4_key(k):
     return inet_ntop(AF_INET, pack("I", k.value))
 
 def get_ipv6_key(k):
     return inet_ntop(AF_INET6, k)
 
+hostname = ""
+if os.path.isfile(HOSTNAME_PATH):
+    f = open(HOSTNAME_PATH)
+    hostname = f.read().strip()
+    f.close()
+
 # initialize BPF
 b = BPF(text=bpf_text)
-
 ipv4_send_bytes = b["ipv4_send_bytes"]
 ipv4_recv_bytes = b["ipv4_recv_bytes"]
 ipv6_send_bytes = b["ipv6_send_bytes"]
@@ -156,6 +180,36 @@ b.attach_kprobe(event="udpv6_recvmsg", fn_name="udp_recvmsg")
 b.attach_kretprobe(event="udp_recvmsg", fn_name="ret_udp_recvmsg")
 b.attach_kretprobe(event="udpv6_recvmsg", fn_name="ret_udp_recvmsg")
 
+# influx DB line protocal tag/field names
+MEASUREMENT = "traffic"
+RX = "received_bytes"
+TX = "sent_bytes"
+
+class InfluxLineProtocolWriter(object):
+    def __init__(self, *, timestamp=None):
+        if timestamp is None:
+            self._timestamp = int(float(time()) * 10**9)
+        else:
+            self._timestamp = timestamp
+        self._lines = []
+
+    def add_measurement(self, measurement, tags, fields):
+        timestamp = self._timestamp
+
+        if tags:
+            tags_str = ',' + ','.join(f'{k}={v}' for k, v in tags.items())
+        else:
+            tags_str = ''
+
+        fields_str = ','.join(f'{k}={v}' for k, v in tags.items())
+
+        self._lines.append(
+            f'{measurement}{tags_str} {fields_str} {timestamp}',
+        )
+
+    def as_string(self):
+        return '\n'.join(self._lines)
+
 # output
 exiting = False
 while not exiting:
@@ -165,6 +219,13 @@ while not exiting:
         exiting = True
 
     print()
+
+    # Get pod metadata
+    all_pod_metadata = {}
+    ret = v1.list_pod_for_all_namespaces(watch=False, field_selector=f'spec.nodeName={hostname}')
+    for pod in ret.items:
+        if pod.status.pod_ip:
+            all_pod_metadata[pod.status.pod_ip] = [pod.metadata.namespace, pod.metadata.name]
 
     # IPv4: build dict of all seen keys
     ipv4_throughput = defaultdict(lambda: [0, 0])
@@ -178,18 +239,29 @@ while not exiting:
         ipv4_throughput[key][1] = v.value
     ipv4_recv_bytes.clear()
 
-    if ipv4_throughput:
-        print("%-21s %6s %6s" % ("LADDR", "RX_B", "TX_B"))
-
     # output
-    for k, (send_bytes, recv_bytes) in sorted(ipv4_throughput.items(),
+    ipv4_datapoints = InfluxLineProtocolWriter()
+    for local_address, (send_bytes, recv_bytes) in sorted(ipv4_throughput.items(),
                                               key=lambda kv: sum(kv[1]),
                                               reverse=True):
-        print("%-21s %6d %6d" % (
-            k,
-            int(recv_bytes),
-            int(send_bytes),
-        ))
+        ipv4_datapoints.add_measurement(
+            MEASUREMENT,
+            dict(
+                hostname=hostname,
+                ip_version="4",
+                local_address=local_address,
+                namespace=all_pod_metadata.get(local_address, ["NA", "NA"])[0],
+                pod=all_pod_metadata.get(local_address, ["NA", "NA"])[1],
+            ),
+            dict(
+                sent_bytes=int(send_bytes),
+                received_bytes=int(recv_bytes),
+            ),
+        )
+
+    response = requests.post(ENDPOINT, headers=HEADERS, data=ipv4_datapoints.as_string())
+    if response.status_code >= 400:
+        logger.warning("HTTP error %d", response.status_code)
 
     # IPv6: build dict of all seen keys
     ipv6_throughput = defaultdict(lambda: [0, 0])
@@ -203,16 +275,26 @@ while not exiting:
         ipv6_throughput[key][1] = v.value
     ipv6_recv_bytes.clear()
 
-    if ipv6_throughput:
-        # more than 80 chars, sadly.
-        print("\n%-32s %6s %6s" % ("LADDR6", "RX_B", "TX_B"))
-
     # output
-    for k, (send_bytes, recv_bytes) in sorted(ipv6_throughput.items(),
+    ipv6_datapoints = InfluxLineProtocolWriter()
+    for local_address, (send_bytes, recv_bytes) in sorted(ipv6_throughput.items(),
                                               key=lambda kv: sum(kv[1]),
                                               reverse=True):
-        print("%-32s %6d %6d" % (
-            k,
-            int(recv_bytes),
-            int(send_bytes),
-        ))
+        ipv6_datapoints.add_measurement(
+            MEASUREMENT,
+            dict(
+                hostname=hostname,
+                ip_version="6",
+                local_address=local_address,
+                namespace=all_pod_metadata.get(local_address, ["NA", "NA"])[0],
+                pod=all_pod_metadata.get(local_address, ["NA", "NA"])[1],
+            ),
+            dict(
+                send_bytes=int(send_bytes),
+                received_bytes=int(recv_bytes),
+            )
+        )
+
+    response = requests.post(ENDPOINT, headers=HEADERS, data=ipv6_datapoints.as_string())
+    if response.status_code >= 400:
+        logger.warning("HTTP error %d", response.status_code)
