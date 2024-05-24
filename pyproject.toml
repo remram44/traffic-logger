@@ -1,0 +1,16 @@
+[tool.poetry]
+name = "k8s-traffic-logger"
+version = "0.1.0"
+description = ""
+authors = ["Remi Rampin <remi@rampin.org>"]
+license = "MIT"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10,<4"
+kubernetes = "*"
+requests = "*"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
